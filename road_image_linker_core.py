@@ -373,65 +373,68 @@ class RoadImageLinker:
 <html>
 <head>
     <style>
-        body { 
-            margin: 5px; 
-            font-family: Arial, sans-serif; 
-            background: #f9f9f9;
+        body {
+            margin: 0; /* Remove default body margin */
+            font-family: Arial, sans-serif;
+            background: #f9f9f9; /* Light background for the maptip */
             border-radius: 5px;
-            padding: 10px;
+            padding: 10px; /* Overall padding for the content */
             max-width: 350px;
         }
         .header {
             font-weight: bold;
             color: #333;
-            margin-bottom: 10px;
-            border-bottom: 1px solid #ddd;
+            margin-bottom: 8px; /* Reduced margin below header */
+            border-bottom: 1px solid #eee; /* Lighter border */
             padding-bottom: 5px;
+            font-size: 1em; /* Slightly smaller header font */
         }
-        .image-container { 
+        .image-container {
             text-align: center;
-            margin: 10px 0;
+            margin: 8px 0; /* Reduced margin around image container */
+            padding: 5px; /* Padding inside the image container */
         }
-        .road-image { 
-            max-width: 300px; 
-            max-height: 200px; 
-            border: 2px solid #007cba;
-            border-radius: 4px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        .road-image {
+            max-width: 100%; /* Ensure image fits container */
+            height: auto; /* Maintain aspect ratio */
+            max-height: 180px; /* Slightly reduced max height */
+            border: 1px solid #ddd; /* Minimal border for the image */
+            border-radius: 3px; /* Slightly less rounded corners */
         }
         .image-info {
-            font-size: 11px;
-            color: #666;
-            margin-top: 5px;
-            background: white;
-            padding: 5px;
-            border-radius: 3px;
+            font-size: 0.85em; /* Slightly smaller font for info text */
+            color: #555; /* Slightly darker grey for better contrast */
+            margin-top: 8px; /* Reduced margin above info text */
+            padding: 5px; /* Padding for the info text block */
+            text-align: left;
+        }
+        .image-info div {
+            margin-bottom: 2px; /* Reduced space between info lines */
         }
         .distance {
             font-weight: bold;
             color: #007cba;
+            font-size: 0.95em; /* Slightly smaller distance font */
         }
         .no-image {
             color: #999;
             font-style: italic;
             text-align: center;
-            padding: 20px;
+            padding: 15px; /* Reduced padding for no image message */
+            background: #fff;
+            border-radius: 3px;
         }
     </style>
 </head>
 <body>
-    [% IF "Image_URI" != '' %]
-        <div class="header">Road Crack Image</div>
-        <div class="image-container">
-            <img src="[% "Image_URI" %]" alt="Road crack image" class="road-image" onerror="this.style.display='none';">
-            <div class="image-info">
-                <div><strong>File:</strong> [% "Image_Name" %]</div>
-                <div><strong>Distance:</strong> <span class="distance">[% "Distance_m" %]m</span></div>
-            </div>
-        </div>
-    [% ELSE %]
-        <div class="no-image">No image associated with this road segment</div>
-    [% END %]
+    <div class="header">Road Crack Information</div>
+    <div class="image-container">
+        <img src="[% "Image_URI" %]" alt="Road crack image" class="road-image" onerror="this.style.display='none'; this.closest('.image-container').innerHTML = '<div class=\'no-image\'>No image available</div>';">
+    </div>
+    <div class="image-info">
+        <div><strong>File:</strong> [% "Image_Name" %]</div>
+        <div><strong>Distance:</strong> <span class="distance">[% "Distance_m" %]m</span></div>
+    </div>
 </body>
 </html>'''
         
