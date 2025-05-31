@@ -1,15 +1,19 @@
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
+import os
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsProject, QgsMessageLog, Qgis, QgsVectorLayer
-import os.path
 from .dialog import RoadImageLinkerDialog
 from .road_image_linker_core import RoadImageLinker
+from .excel_to_shapefile import ExcelToShapefileConverter
+import tempfile
+import shutil
 
 class RoadImageLinkerPlugin:
     def __init__(self, iface):
         self.iface = iface
         self.plugin_dir = os.path.dirname(__file__)
+        self.temp_dir = None
         
         # Initialize locale
         locale = QSettings().value('locale/userLocale')[0:2]
@@ -30,9 +34,17 @@ class RoadImageLinkerPlugin:
     def tr(self, message):
         return QCoreApplication.translate('RoadImageLinker', message)
 
-    def add_action(self, icon_path, text, callback, enabled_flag=True,
-                   add_to_menu=True, add_to_toolbar=True, status_tip=None,
-                   whats_this=None, parent=None):
+    def add_action(
+        self,
+        icon_path,
+        text,
+        callback,
+        enabled_flag=True,
+        add_to_menu=True,
+        add_to_toolbar=True,
+        status_tip=None,
+        whats_this=None,
+        parent=None):
         
         icon = QIcon(icon_path)
         action = QAction(icon, text, parent)
@@ -49,9 +61,12 @@ class RoadImageLinkerPlugin:
             self.iface.addToolBarIcon(action)
 
         if add_to_menu:
-            self.iface.addPluginToVectorMenu(self.menu, action)
+            self.iface.addPluginToVectorMenu(
+                self.menu,
+                action)
 
         self.actions.append(action)
+
         return action
 
     def initGui(self):
@@ -70,6 +85,15 @@ class RoadImageLinkerPlugin:
                 self.tr(u'&Road Image Linker'),
                 action)
             self.iface.removeToolBarIcon(action)
+        
+        # Clean up temp directory
+        if self.temp_dir and os.path.exists(self.temp_dir):
+            try:
+                shutil.rmtree(self.temp_dir)
+            except Exception as e:
+                QgsMessageLog.logMessage(
+                    f"Error cleaning temp directory: {str(e)}",
+                    "Road Image Linker", Qgis.Warning)
 
     def run(self):
         if self.first_start == True:
@@ -85,11 +109,50 @@ class RoadImageLinkerPlugin:
     def execute_linking(self):
         try:
             # Get parameters from dialog
-            shapefile_path = self.dlg.get_shapefile_path()
+            input_type = self.dlg.get_input_type()
             images_folder = self.dlg.get_images_folder()
             output_path = self.dlg.get_output_path()
             max_distance = self.dlg.get_max_distance()
             
+            # Handle Excel input
+            if input_type == 'excel':
+                excel_path = self.dlg.get_excel_path()
+                if not excel_path:
+                    self.iface.messageBar().pushMessage(
+                        "Error", 
+                        "Please select an Excel file",
+                        level=Qgis.Critical
+                    )
+                    return
+                
+                # Create temporary shapefile
+                self.temp_dir = tempfile.mkdtemp()
+                temp_shapefile = os.path.join(self.temp_dir, "temp_roads.shp")
+                
+                converter = ExcelToShapefileConverter()
+                success, msg = converter.process_excel(excel_path, temp_shapefile)
+                
+                if not success:
+                    self.iface.messageBar().pushMessage(
+                        "Error", 
+                        msg,
+                        level=Qgis.Critical
+                    )
+                    return
+                
+                shapefile_path = temp_shapefile
+            else:
+                # Original shapefile handling
+                shapefile_path = self.dlg.get_shapefile_path()
+                if not shapefile_path:
+                    self.iface.messageBar().pushMessage(
+                        "Error", 
+                        "Please select a shapefile",
+                        level=Qgis.Critical
+                    )
+                    return
+            
+            # Proceed with existing logic
             linker = RoadImageLinker(shapefile_path, images_folder)
             success = linker.run_complete_workflow(output_path, max_distance)
             
@@ -116,8 +179,8 @@ class RoadImageLinkerPlugin:
                     
                     self.iface.messageBar().pushMessage(
                         "Success", 
-                        f"Successfully linked roads to images. Layer '{layer_name}' added to map with map tips configured.",
-                        level=Qgis.Success,
+                        f"Successfully processed roads. Layer '{layer_name}' added to map.",
+                        level=Qgis.Info,  # changed from Qgis.Success to Qgis.Info
                         duration=5
                     )
                     
@@ -133,7 +196,7 @@ class RoadImageLinkerPlugin:
             else:
                 self.iface.messageBar().pushMessage(
                     "Error", 
-                    "Failed to link roads to images. Check the log for details.",
+                    "Processing failed. Check the log for details.",
                     level=Qgis.Critical
                 )
                 
@@ -143,7 +206,9 @@ class RoadImageLinkerPlugin:
                 f"Plugin error: {str(e)}",
                 level=Qgis.Critical
             )
-            QgsMessageLog.logMessage(f"Road Image Linker Error: {str(e)}", level=Qgis.Critical)
+            QgsMessageLog.logMessage(
+                f"Road Image Linker Error: {str(e)}", 
+                level=Qgis.Critical)
 
     def setup_map_tips(self, layer, html_path):
         """Configure map tips for the layer"""
@@ -179,6 +244,3 @@ class RoadImageLinkerPlugin:
                 "Road Image Linker", Qgis.Critical
             )
             return False
-
-def classFactory(iface):
-    return RoadImageLinkerPlugin(iface)

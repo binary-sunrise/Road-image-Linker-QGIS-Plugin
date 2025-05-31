@@ -1,77 +1,96 @@
-import os
+from qgis.PyQt.QtWidgets import QDialog, QFileDialog
 from qgis.PyQt import uic
-from qgis.PyQt import QtWidgets
-from qgis.PyQt.QtCore import pyqtSignal
-from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
+import os
 
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'dialog.ui'))
 
-class RoadImageLinkerDialog(QtWidgets.QDialog, FORM_CLASS):
-    def __init__(self, parent=None):
-        super(RoadImageLinkerDialog, self).__init__(parent)
+class RoadImageLinkerDialog(QDialog, FORM_CLASS):
+    def __init__(self):
+        QDialog.__init__(self)
         self.setupUi(self)
         
-        # Connect buttons to methods
-        self.btn_browse_shapefile.clicked.connect(self.select_shapefile)
-        self.btn_browse_images.clicked.connect(self.select_images_folder)
-        self.btn_browse_output.clicked.connect(self.select_output_path)
+        # Connect browse buttons
+        self.browseShapefileButton.clicked.connect(self.browse_shapefile)
+        self.browseImagesButton.clicked.connect(self.browse_images)
+        self.browseOutputButton.clicked.connect(self.browse_output)
+        self.browseExcelButton.clicked.connect(self.browse_excel)
         
-        # Set default values
-        self.spin_max_distance.setValue(50)
+        # Initialize input type toggle
+        self.inputTypeComboBox.currentIndexChanged.connect(self.toggle_input_type)
+        self.toggle_input_type()  # Set initial state
         
-    def select_shapefile(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, 
-            "Select Road Shapefile", 
-            "", 
-            "Shapefile (*.shp);;All Files (*)"
-        )
-        if file_path:
-            self.line_shapefile.setText(file_path)
+    def toggle_input_type(self):
+        """Show/hide appropriate input fields based on selection"""
+        is_shapefile = self.inputTypeComboBox.currentIndex() == 0
+        self.shapefileLabel.setVisible(is_shapefile)
+        self.shapefileLineEdit.setVisible(is_shapefile)
+        self.browseShapefileButton.setVisible(is_shapefile)
+        
+        is_excel = self.inputTypeComboBox.currentIndex() == 1
+        self.excelLabel.setVisible(is_excel)
+        self.excelLineEdit.setVisible(is_excel)
+        self.browseExcelButton.setVisible(is_excel)
     
-    def select_images_folder(self):
-        folder_path = QFileDialog.getExistingDirectory(
-            self, 
+    def browse_excel(self):
+        """Open file dialog for Excel input"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Excel File",
+            "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)"
+        )
+        if filename:
+            self.excelLineEdit.setText(filename)
+    
+    def browse_shapefile(self):
+        """Open file dialog for shapefile input"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Shapefile",
+            "",
+            "Shapefiles (*.shp);;All Files (*)"
+        )
+        if filename:
+            self.shapefileLineEdit.setText(filename)
+    
+    def browse_images(self):
+        """Open directory dialog for images folder"""
+        folder = QFileDialog.getExistingDirectory(
+            self,
             "Select Images Folder"
         )
-        if folder_path:
-            self.line_images_folder.setText(folder_path)
+        if folder:
+            self.imagesLineEdit.setText(folder)
     
-    def select_output_path(self):
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Save Output Shapefile", 
-            "", 
-            "Shapefile (*.shp);;All Files (*)"
+    def browse_output(self):
+        """Open save dialog for output shapefile"""
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Output Shapefile",
+            "",
+            "Shapefiles (*.shp);;All Files (*)"
         )
-        if file_path:
-            self.line_output.setText(file_path)
+        if filename:
+            if not filename.lower().endswith('.shp'):
+                filename += '.shp'
+            self.outputLineEdit.setText(filename)
+    
+    def get_input_type(self):
+        """Returns input type as string"""
+        return "shapefile" if self.inputTypeComboBox.currentIndex() == 0 else "excel"
     
     def get_shapefile_path(self):
-        return self.line_shapefile.text()
+        return self.shapefileLineEdit.text()
+    
+    def get_excel_path(self):
+        return self.excelLineEdit.text()
     
     def get_images_folder(self):
-        return self.line_images_folder.text()
+        return self.imagesLineEdit.text()
     
     def get_output_path(self):
-        return self.line_output.text()
+        return self.outputLineEdit.text()
     
     def get_max_distance(self):
-        return self.spin_max_distance.value()
-    
-    def accept(self):
-        # Validate inputs before accepting
-        if not self.get_shapefile_path():
-            QMessageBox.warning(self, "Warning", "Please select a shapefile")
-            return
-        
-        if not self.get_images_folder():
-            QMessageBox.warning(self, "Warning", "Please select images folder")
-            return
-            
-        if not self.get_output_path():
-            QMessageBox.warning(self, "Warning", "Please specify output path")
-            return
-        
-        super().accept()
+        return self.distanceSpinBox.value()
