@@ -202,6 +202,39 @@ class RoadImageLinker(QObject):
         self.progress_handler.update(steps[3].value, f"{steps[3].message} - Found {matched_roads} matches")
         return matched_roads
     
+    def save_to_geopackage(self, output_path):
+        """Save road features and image points to a GeoPackage file"""
+        try:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Convert data to EPSG:4326 for storage
+            roads_output = self.roads_gdf.to_crs('EPSG:4326')
+            points_output = self.image_points_gdf.to_crs('EPSG:4326')
+            
+            # Save roads layer
+            roads_output.to_file(
+                output_path,
+                layer='roads',
+                driver='GPKG'
+            )
+            
+            # Save image points layer
+            points_output.to_file(
+                output_path,
+                layer='image_points',
+                driver='GPKG'
+            )
+            
+            return True
+            
+        except Exception as e:
+            QgsMessageLog.logMessage(
+                f"✗ Error saving GeoPackage: {e}", 
+                "Road Image Linker", Qgis.Critical
+            )
+            return False
+    
     def save_updated_shapefile(self, output_path):
         try:
             output_path = Path(output_path)
@@ -270,7 +303,108 @@ class RoadImageLinker(QObject):
             )
             return False
     
-    def run_complete_workflow(self, output_shapefile, max_distance=50):
+    def run_complete_workflow(self):
+        """Run complete workflow of road image linking process"""
+        self.progress_handler.reset_progress()
+        self.progress_handler.set_current_step("Loading and validating data...")
+        
+        # Load and validate files
+        if not self.load_road_layer():
+            return False
+            
+        if not self.load_image_folder():
+            return False
+            
+        if not self.validate_data():
+            return False
+        
+        self.progress_handler.set_current_step("Processing road geometries...")
+        self.process_roads()
+        
+        self.progress_handler.set_current_step("Processing images...")
+        self.process_images()
+            
+        self.progress_handler.set_current_step("Saving GeoPackage...")
+        output_path = self.file_handler.get_output_geopackage_path()
+        if not self.save_to_geopackage(output_path):
+            return False
+            
+        self.progress_handler.set_current_step("Loading layers to QGIS...")
+        if not self.load_layers_to_qgis():
+            return False
+            
+        self.progress_handler.complete()
+        return True
+
+    def save_updated_shapefile(self, output_path):
+        try:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_gdf = self.roads_gdf.to_crs('EPSG:4326')
+            output_gdf.to_file(output_path)
+            return True
+            
+        except Exception as e:
+            QgsMessageLog.logMessage(
+                f"✗ Error saving shapefile: {e}", 
+                "Road Image Linker", Qgis.Critical
+            )
+            return False
+    
+    def create_qgis_assets(self, output_dir):
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        html_template = '''<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { margin: 0; font-family: Arial; background: #f9f9f9; padding: 10px; max-width: 350px; }
+        .header { font-weight: bold; color: #333; margin-bottom: 8px; border-bottom: 1px solid #eee; }
+        .image-container { text-align: center; margin: 8px 0; padding: 5px; }
+        .road-image { max-width: 100%; height: auto; max-height: 180px; border: 1px solid #ddd; }
+        .image-info { font-size: 0.85em; color: #555; margin-top: 8px; padding: 5px; }
+    </style>
+</head>
+<body>
+    <div class="header">Road Crack Information</div>
+    <div class="image-container">
+        <img src="[% "Image_URI" %]" class="road-image" onerror="this.style.display='none'">
+    </div>
+    <div class="image-info">
+        <div><strong>File:</strong> [% "Image_Name" %]</div>
+        <div><strong>Distance:</strong> [% "Distance_m" %]m</div>
+    </div>
+</body>
+</html>'''
+        
+        with open(output_dir / "image_tooltip_template.html", 'w', encoding='utf-8') as f:
+            f.write(html_template)
+    
+    def setup_qgis_map_tips(self, layer_name, html_path):
+        try:
+            html_path = Path(html_path).resolve()
+            if not html_path.exists():
+                return False
+                
+            layers = QgsProject.instance().mapLayersByName(layer_name)
+            if not layers:
+                return False
+                
+            with open(html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            
+            layers[0].setMapTipTemplate(html_content)
+            return True
+            
+        except Exception as e:
+            QgsMessageLog.logMessage(
+                f"✗ Error setting up map tips: {e}", 
+                "Road Image Linker", Qgis.Critical
+            )
+            return False
+    
+    def run_complete_workflow(self, output_path, max_distance=50):
         """Run the complete workflow with progress tracking"""
         workflow_steps = [
             ProgressStep(5, "Starting workflow..."),
@@ -283,8 +417,10 @@ class RoadImageLinker(QObject):
         ]
         
         try:
-            # Validate output path
-            output_path = self.file_handler.get_output_shapefile_path(output_shapefile)
+            # Convert output path to .gpkg if needed
+            output_path = Path(output_path)
+            if output_path.suffix.lower() != '.gpkg':
+                output_path = output_path.with_suffix('.gpkg')
             
             self.progress_handler.update(workflow_steps[0].value, workflow_steps[0].message)
             if not self.load_road_shapefile():
@@ -302,16 +438,20 @@ class RoadImageLinker(QObject):
                 return False
                 
             self.progress_handler.update(workflow_steps[4].value, workflow_steps[4].message)
-            if not self.save_updated_shapefile(output_path):
+            if not self.save_to_geopackage(output_path):
+                return False
+            
+            # Load layers to QGIS project
+            success, points_layer = self.load_layers_to_qgis(str(output_path))
+            if not success:
                 return False
                 
             self.progress_handler.update(workflow_steps[5].value, workflow_steps[5].message)
             output_dir = output_path.parent
             self.create_qgis_assets(output_dir)
             
-            layer_name = output_path.stem
             html_path = str(output_dir / "image_tooltip_template.html")
-            self.setup_qgis_map_tips(layer_name, html_path)
+            self.setup_qgis_map_tips(points_layer.name(), html_path)
             
             self.progress_handler.update(workflow_steps[6].value, workflow_steps[6].message)
             return True
@@ -323,7 +463,39 @@ class RoadImageLinker(QObject):
                 "Road Image Linker", Qgis.Critical
             )
             return False
-
+    
+    def load_layers_to_qgis(self, geopackage_path):
+        """Load both roads and image points layers from GeoPackage to QGIS"""
+        try:
+            # Load roads layer first (it should be at the bottom)
+            roads_layer = QgsVectorLayer(
+                f"{geopackage_path}|layername=roads",
+                "Road Network",
+                "ogr"
+            )
+            
+            # Load image points layer (it should be on top)
+            points_layer = QgsVectorLayer(
+                f"{geopackage_path}|layername=image_points",
+                "Image Locations",
+                "ogr"
+            )
+            
+            if roads_layer.isValid() and points_layer.isValid():
+                # Add roads layer first so points are on top
+                QgsProject.instance().addMapLayer(roads_layer)
+                QgsProject.instance().addMapLayer(points_layer)
+                return True, points_layer
+            else:
+                raise Exception("Failed to load GeoPackage layers")
+                
+        except Exception as e:
+            QgsMessageLog.logMessage(
+                f"✗ Error loading layers: {e}", 
+                "Road Image Linker", Qgis.Critical
+            )
+            return False, None
+    
 
 if __name__ == "__main__":
     try:
