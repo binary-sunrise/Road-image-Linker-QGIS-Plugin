@@ -3,10 +3,10 @@ from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QProgressDialog
 from qgis.core import QgsProject, QgsMessageLog, Qgis, QgsVectorLayer, QgsTask, QgsApplication
-from .dialog import RoadImageLinkerDialog
-from .progress_dialog import ProgressDialog
-from .road_image_linker_core import RoadImageLinker
-from .excel_to_shapefile import ExcelToShapefileConverter
+from .ui.dialog import RoadImageLinkerDialog
+from .ui.progress_dialog import ProgressDialog
+from .core.road_image_linker_core import RoadImageLinker
+from .core.excel_to_shapefile import ExcelToShapefileConverter
 import tempfile
 import shutil
 
