@@ -4,13 +4,14 @@ import geopandas as gpd
 from shapely.geometry import LineString
 from qgis.core import QgsMessageLog, Qgis
 from pathlib import Path
+from qgis.PyQt.QtCore import pyqtSignal, QObject
 
-class ExcelToShapefileConverter:
-    """
-    Converts Excel road data to a shapefile with line geometries
-    """
+class ExcelToShapefileConverter(QObject):
+    progress_signal = pyqtSignal(int, str)
     
-    def __init__(self):
+    def __init__(self, progress_dialog=None):
+        super().__init__()
+        self.progress_dialog = progress_dialog
         self.required_columns = {
             'StartChainage': float,
             'StartingLatitude': float,
@@ -23,29 +24,27 @@ class ExcelToShapefileConverter:
             'LaneNumber': str
         }
     
+    def update_progress(self, value, message):
+        if self.progress_dialog:
+            self.progress_dialog.set_progress(value, message)
+        self.progress_signal.emit(value, message)
+    
     def validate_excel(self, excel_path):
-        """
-        Validate the Excel file structure and content
-        
-        Args:
-            excel_path (str): Path to Excel file
-            
-        Returns:
-            tuple: (bool success, str message, DataFrame data)
-        """
         try:
+            self.update_progress(15, "Validating Excel file...")
+            
             if not Path(excel_path).exists():
                 return False, f"Excel file not found: {excel_path}", None
                 
-            # Read Excel file
+            self.update_progress(20, "Reading Excel data...")
             df = pd.read_excel(excel_path)
             
-            # Check required columns
+            self.update_progress(25, "Checking columns...")
             missing_cols = [col for col in self.required_columns if col not in df.columns]
             if missing_cols:
                 return False, f"Missing required columns: {', '.join(missing_cols)}", None
                 
-            # Check data types
+            self.update_progress(30, "Validating data types...")
             type_errors = []
             for col, expected_type in self.required_columns.items():
                 if not pd.api.types.is_numeric_dtype(df[col]) and expected_type == float:
@@ -54,74 +53,52 @@ class ExcelToShapefileConverter:
             if type_errors:
                 return False, f"Data type issues: {', '.join(type_errors)}", None
                 
+            self.update_progress(40, "Excel validation complete")
             return True, "Excel file validated successfully", df
             
         except Exception as e:
             return False, f"Error reading Excel file: {str(e)}", None
     
     def convert_to_shapefile(self, df, output_path):
-        """
-        Convert validated DataFrame to shapefile
-        
-        Args:
-            df (DataFrame): Validated road data
-            output_path (str): Output shapefile path
-            
-        Returns:
-            tuple: (bool success, str message)
-        """
         try:
-            # Create line geometries
+            self.update_progress(45, "Creating geometries...")
             geometries = []
-            for _, row in df.iterrows():
+            total_rows = len(df)
+            
+            for i, (_, row) in enumerate(df.iterrows()):
                 start_point = (row['StartingLongitude'], row['StartingLatitude'])
                 end_point = (row['EndingLongitude'], row['EndingLatitude'])
                 geometries.append(LineString([start_point, end_point]))
+                
+                # Update progress every 10 rows
+                if i % 10 == 0:
+                    progress = 45 + int((i / total_rows) * 45)
+                    self.update_progress(progress, f"Processing row {i+1} of {total_rows}...")
             
-            # Create GeoDataFrame
+            self.update_progress(70, "Creating GeoDataFrame...")
             gdf = gpd.GeoDataFrame(
                 df,
                 geometry=geometries,
-                crs='EPSG:4326'  # WGS84
+                crs='EPSG:4326'
             )
             
-            # Ensure output directory exists
+            self.update_progress(80, "Saving shapefile...")
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Save shapefile
             gdf.to_file(output_path)
             
-            QgsMessageLog.logMessage(
-                f"Successfully created shapefile: {output_path}",
-                "Excel Converter", Qgis.Info
-            )
-            
+            self.update_progress(90, "Shapefile created successfully")
             return True, f"Shapefile created: {output_path}"
             
         except Exception as e:
             error_msg = f"Error creating shapefile: {str(e)}"
-            QgsMessageLog.logMessage(
-                error_msg,
-                "Excel Converter", Qgis.Critical
-            )
+            self.update_progress(0, error_msg)
             return False, error_msg
 
     def process_excel(self, excel_path, output_shapefile):
-        """
-        Complete workflow from Excel to shapefile
-        
-        Args:
-            excel_path (str): Input Excel file path
-            output_shapefile (str): Output shapefile path
-            
-        Returns:
-            tuple: (bool success, str message)
-        """
-        # Validate Excel
         valid, msg, df = self.validate_excel(excel_path)
         if not valid:
             return False, msg
             
-        # Convert to shapefile
         return self.convert_to_shapefile(df, output_shapefile)
