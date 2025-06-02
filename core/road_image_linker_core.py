@@ -9,20 +9,20 @@ from qgis.PyQt.QtWidgets import QApplication
 import geopandas as gpd
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
-import pandas as pd
-from shapely.geometry import Point
-import numpy as np
 from pathlib import Path
-from urllib.parse import urljoin
-from urllib.request import pathname2url
+from shapely.geometry import Point
+from ..utils.file_handler import FileHandler
+from ..utils.progress import ProgressHandler, ProgressStep
 
 class RoadImageLinker(QObject):
     progress_signal = pyqtSignal(int, str)
     
     def __init__(self, shapefile_path, images_folder):
         super().__init__()
-        self.shapefile_path = Path(shapefile_path)
-        self.images_folder = Path(images_folder)
+        self.file_handler = FileHandler()
+        self.progress_handler = ProgressHandler()
+        self.shapefile_path = self.file_handler.ensure_path(shapefile_path)
+        self.images_folder = self.file_handler.ensure_path(images_folder)
         self.roads_gdf = None
         self.image_points_gdf = None
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.tiff', '.tif'}
@@ -31,11 +31,8 @@ class RoadImageLinker(QObject):
         degrees, minutes, seconds = dms_value
         return degrees + (minutes / 60.0) + (seconds / 3600.0)
     
-    def _path_to_uri(self, file_path):
-        abs_path = Path(file_path).resolve()
-        return urljoin('file:', pathname2url(str(abs_path)))
-    
     def extract_gps_from_image(self, image_path):
+        """Extract GPS coordinates from image EXIF data"""
         try:
             with Image.open(image_path) as image:
                 exif_data = image._getexif()
@@ -80,9 +77,12 @@ class RoadImageLinker(QObject):
             return None, None
     
     def load_road_shapefile(self):
+        """Load road shapefile into GeoDataFrame"""
         try:
-            if not self.shapefile_path.exists():
-                raise FileNotFoundError(f"Shapefile not found: {self.shapefile_path}")
+            valid, msg = self.file_handler.validate_file_exists(self.shapefile_path, '.shp')
+            if not valid:
+                QgsMessageLog.logMessage(msg, "Road Image Linker", Qgis.Critical)
+                return False
                 
             self.roads_gdf = gpd.read_file(self.shapefile_path)
             QgsMessageLog.logMessage(
@@ -99,6 +99,7 @@ class RoadImageLinker(QObject):
             return False
     
     def extract_image_locations(self):
+        """Extract GPS locations from images"""
         if not self.images_folder.exists():
             QgsMessageLog.logMessage(
                 f"✗ Images folder not found: {self.images_folder}", 
@@ -115,7 +116,7 @@ class RoadImageLinker(QObject):
                 lat, lon = self.extract_gps_from_image(image_file)
                 
                 if lat is not None and lon is not None:
-                    uri_path = self._path_to_uri(image_file)
+                    uri_path = self.file_handler.path_to_uri(image_file)
                     image_data.append({
                         'image_path': str(image_file),
                         'image_uri': uri_path,
@@ -143,13 +144,26 @@ class RoadImageLinker(QObject):
             self.image_points_gdf = self.image_points_gdf.to_crs(self.roads_gdf.crs)
     
     def find_closest_images_to_roads(self, max_distance=50):
+        """Find closest images to road features within max_distance"""
+        steps = [
+            ProgressStep(0, "Starting image matching..."),
+            ProgressStep(30, "Computing distances..."),
+            ProgressStep(60, "Finding closest matches..."),
+            ProgressStep(100, "Completed matching")
+        ]
+        
+        self.progress_handler.update(steps[0].value, steps[0].message)
+        
         for col in ['Image_Path', 'Image_URI', 'Image_Name', 'Distance_m']:
             if col not in self.roads_gdf.columns:
                 self.roads_gdf[col] = ''
         
         matches = []
+        total_roads = len(self.roads_gdf)
         
-        for road_idx, road_feature in self.roads_gdf.iterrows():
+        self.progress_handler.update(steps[1].value, steps[1].message)
+        
+        for idx, (road_idx, road_feature) in enumerate(self.roads_gdf.iterrows()):
             distances = self.image_points_gdf.geometry.distance(road_feature.geometry)
             
             if len(distances) == 0:
@@ -168,6 +182,13 @@ class RoadImageLinker(QObject):
                     'image_uri': closest_image['image_uri'],
                     'image_name': closest_image['filename']
                 })
+            
+            # Update progress every 10 roads
+            if idx % 10 == 0:
+                progress = steps[1].value + int((idx / total_roads) * (steps[2].value - steps[1].value))
+                self.progress_handler.update(progress, f"Processing road {idx + 1} of {total_roads}...")
+        
+        self.progress_handler.update(steps[2].value, steps[2].message)
         
         matched_roads = 0
         for match in matches:
@@ -178,6 +199,7 @@ class RoadImageLinker(QObject):
             self.roads_gdf.at[road_idx, 'Distance_m'] = round(match['distance'], 2)
             matched_roads += 1
         
+        self.progress_handler.update(steps[3].value, f"{steps[3].message} - Found {matched_roads} matches")
         return matched_roads
     
     def save_updated_shapefile(self, output_path):
@@ -249,46 +271,53 @@ class RoadImageLinker(QObject):
             return False
     
     def run_complete_workflow(self, output_shapefile, max_distance=50):
+        """Run the complete workflow with progress tracking"""
+        workflow_steps = [
+            ProgressStep(5, "Starting workflow..."),
+            ProgressStep(20, "Processing images..."),
+            ProgressStep(40, "Reprojecting data..."),
+            ProgressStep(60, "Matching images..."),
+            ProgressStep(80, "Saving results..."),
+            ProgressStep(90, "Creating assets..."),
+            ProgressStep(100, "Completed successfully!")
+        ]
+        
         try:
-            self.progress_signal.emit(5, "Starting workflow...")
-            QApplication.processEvents()
+            # Validate output path
+            output_path = self.file_handler.get_output_shapefile_path(output_shapefile)
             
+            self.progress_handler.update(workflow_steps[0].value, workflow_steps[0].message)
             if not self.load_road_shapefile():
                 return False
                 
-            self.progress_signal.emit(20, "Processing images...")
-            QApplication.processEvents()
+            self.progress_handler.update(workflow_steps[1].value, workflow_steps[1].message)
             if not self.extract_image_locations():
                 return False
                 
-            self.progress_signal.emit(40, "Reprojecting data...")
-            QApplication.processEvents()
+            self.progress_handler.update(workflow_steps[2].value, workflow_steps[2].message)
             self.reproject_data()
             
-            self.progress_signal.emit(60, "Matching images...")
-            QApplication.processEvents()
+            self.progress_handler.update(workflow_steps[3].value, workflow_steps[3].message)
             if self.find_closest_images_to_roads(max_distance) == 0:
                 return False
                 
-            self.progress_signal.emit(80, "Saving results...")
-            QApplication.processEvents()
-            if not self.save_updated_shapefile(output_shapefile):
+            self.progress_handler.update(workflow_steps[4].value, workflow_steps[4].message)
+            if not self.save_updated_shapefile(output_path):
                 return False
                 
-            self.progress_signal.emit(90, "Creating assets...")
-            QApplication.processEvents()
-            output_dir = Path(output_shapefile).parent
+            self.progress_handler.update(workflow_steps[5].value, workflow_steps[5].message)
+            output_dir = output_path.parent
             self.create_qgis_assets(output_dir)
             
-            layer_name = Path(output_shapefile).stem
+            layer_name = output_path.stem
             html_path = str(output_dir / "image_tooltip_template.html")
             self.setup_qgis_map_tips(layer_name, html_path)
             
-            self.progress_signal.emit(100, "Completed successfully!")
+            self.progress_handler.update(workflow_steps[6].value, workflow_steps[6].message)
             return True
             
         except Exception as e:
-            self.progress_signal.emit(0, f"Error: {str(e)}")
+            self.progress_handler.update(0, f"Error: {str(e)}")
             QgsMessageLog.logMessage(
                 f"✗ Workflow failed: {e}", 
                 "Road Image Linker", Qgis.Critical

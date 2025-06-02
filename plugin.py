@@ -1,37 +1,39 @@
 import os
+import tempfile
+import shutil
+from pathlib import Path
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction, QProgressDialog
+from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsProject, QgsMessageLog, Qgis, QgsVectorLayer, QgsTask, QgsApplication
 from .ui.dialog import RoadImageLinkerDialog
 from .ui.progress_dialog import ProgressDialog
 from .core.road_image_linker_core import RoadImageLinker
 from .core.excel_to_shapefile import ExcelToShapefileConverter
-import tempfile
-import shutil
+from .utils.progress import ProgressHandler, ProgressStep
+from .utils.file_handler import FileHandler
 
 class RoadImageLinkerPlugin:
     def __init__(self, iface):
         self.iface = iface
         self.plugin_dir = os.path.dirname(__file__)
         self.temp_dir = None
+        self.file_handler = FileHandler()
+        self.progress_handler = None
+        self.progress_dialog = None
         
         # Initialize locale
         locale = QSettings().value('locale/userLocale')[0:2]
-        locale_path = os.path.join(
-            self.plugin_dir,
-            'i18n',
-            'RoadImageLinker_{}.qm'.format(locale))
+        locale_path = self.file_handler.ensure_path(self.plugin_dir) / 'i18n' / f'RoadImageLinker_{locale}.qm'
 
-        if os.path.exists(locale_path):
+        if locale_path.exists():
             self.translator = QTranslator()
-            self.translator.load(locale_path)
+            self.translator.load(str(locale_path))
             QCoreApplication.installTranslator(self.translator)
 
         self.actions = []
         self.menu = self.tr(u'&Road Image Linker')
         self.first_start = None
-        self.progress_dialog = None
 
     def tr(self, message):
         return QCoreApplication.translate('RoadImageLinker', message)
@@ -108,10 +110,19 @@ class RoadImageLinkerPlugin:
 
     def execute_linking(self):
         try:
-            # Initialize progress dialog
+            # Initialize progress dialog and handler
             self.progress_dialog = ProgressDialog()
+            self.progress_handler = ProgressHandler(self.progress_dialog)
             self.progress_dialog.show()
-            QgsApplication.processEvents()
+            
+            workflow_steps = [
+                ProgressStep(5, "Starting processing..."),
+                ProgressStep(10, "Validating input files..."),
+                ProgressStep(30, "Initializing road image linker..."),
+                ProgressStep(40, "Processing roads and images..."),
+                ProgressStep(90, "Loading results..."),
+                ProgressStep(100, "Processing complete!")
+            ]
             
             # Get parameters from dialog
             input_type = self.dlg.get_input_type()
@@ -119,23 +130,27 @@ class RoadImageLinkerPlugin:
             output_path = self.dlg.get_output_path()
             max_distance = self.dlg.get_max_distance()
             
-            # Update progress
-            self.progress_dialog.set_progress(5, "Starting processing...")
-            QgsApplication.processEvents()
+            self.progress_handler.update(workflow_steps[0].value, workflow_steps[0].message)
+
+            # Validate images folder
+            valid, msg = self.file_handler.validate_file_exists(images_folder)
+            if not valid:
+                self.show_error(f"Images folder error: {msg}")
+                return
 
             # Handle Excel input
             if input_type == 'excel':
                 excel_path = self.dlg.get_excel_path()
-                if not excel_path:
-                    self.show_error("Please select an Excel file")
+                valid, msg = self.file_handler.validate_file_exists(excel_path, '.xlsx')
+                if not valid:
+                    self.show_error(f"Excel file error: {msg}")
                     return
                 
                 # Create temporary shapefile
                 self.temp_dir = tempfile.mkdtemp()
-                temp_shapefile = os.path.join(self.temp_dir, "temp_roads.shp")
+                temp_shapefile = str(self.file_handler.ensure_path(self.temp_dir) / "temp_roads.shp")
                 
-                self.progress_dialog.set_progress(10, "Converting Excel to shapefile...")
-                QgsApplication.processEvents()
+                self.progress_handler.update(workflow_steps[1].value, workflow_steps[1].message)
                 
                 converter = ExcelToShapefileConverter(self.progress_dialog)
                 success, msg = converter.process_excel(excel_path, temp_shapefile)
@@ -146,30 +161,27 @@ class RoadImageLinkerPlugin:
                 
                 shapefile_path = temp_shapefile
             else:
-                # Original shapefile handling
                 shapefile_path = self.dlg.get_shapefile_path()
-                if not shapefile_path:
-                    self.show_error("Please select a shapefile")
+                valid, msg = self.file_handler.validate_file_exists(shapefile_path, '.shp')
+                if not valid:
+                    self.show_error(f"Shapefile error: {msg}")
                     return
             
             # Proceed with existing logic
-            self.progress_dialog.set_progress(30, "Initializing road image linker...")
-            QgsApplication.processEvents()
+            self.progress_handler.update(workflow_steps[2].value, workflow_steps[2].message)
             
             linker = RoadImageLinker(shapefile_path, images_folder)
             linker.progress_signal.connect(self.update_progress)
             
-            self.progress_dialog.set_progress(40, "Processing roads and images...")
-            QgsApplication.processEvents()
+            self.progress_handler.update(workflow_steps[3].value, workflow_steps[3].message)
             
             success = linker.run_complete_workflow(output_path, max_distance)
             
             if success:
-                self.progress_dialog.set_progress(90, "Loading results...")
-                QgsApplication.processEvents()
+                self.progress_handler.update(workflow_steps[4].value, workflow_steps[4].message)
                 
                 # Get the layer name from the output path (without extension)
-                layer_name = os.path.splitext(os.path.basename(output_path))[0]
+                layer_name = self.file_handler.ensure_path(output_path).stem
                 
                 # Remove existing layer if it exists
                 existing_layers = QgsProject.instance().mapLayersByName(layer_name)
@@ -181,14 +193,13 @@ class RoadImageLinkerPlugin:
                 if layer.isValid():
                     QgsProject.instance().addMapLayer(layer)
                     
-                    # Get the HTML template path (in same directory as output)
-                    output_dir = os.path.dirname(output_path)
-                    html_path = os.path.join(output_dir, "image_tooltip_template.html")
-                    
                     # Configure map tips
+                    output_dir = self.file_handler.ensure_path(output_path).parent
+                    html_path = output_dir / "image_tooltip_template.html"
+                    
                     self.setup_map_tips(layer, html_path)
                     
-                    self.progress_dialog.set_progress(100, "Processing complete!")
+                    self.progress_handler.update(workflow_steps[5].value, workflow_steps[5].message)
                     self.iface.messageBar().pushMessage(
                         "Success", 
                         f"Successfully processed roads. Layer '{layer_name}' added to map.",
@@ -214,9 +225,8 @@ class RoadImageLinkerPlugin:
                 self.progress_dialog.close()
 
     def update_progress(self, value, message):
-        if self.progress_dialog:
-            self.progress_dialog.set_progress(value, message)
-            QgsApplication.processEvents()
+        if self.progress_handler:
+            self.progress_handler.update(value, message)
 
     def show_error(self, message):
         self.iface.messageBar().pushMessage(
@@ -228,7 +238,7 @@ class RoadImageLinkerPlugin:
 
     def setup_map_tips(self, layer, html_path):
         try:
-            if not os.path.exists(html_path):
+            if not html_path.exists():
                 QgsMessageLog.logMessage(
                     f"HTML template not found: {html_path}", 
                     "Road Image Linker", Qgis.Warning)

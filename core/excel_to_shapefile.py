@@ -5,13 +5,16 @@ from shapely.geometry import LineString
 from qgis.core import QgsMessageLog, Qgis
 from pathlib import Path
 from qgis.PyQt.QtCore import pyqtSignal, QObject
+from ..utils.file_handler import FileHandler
+from ..utils.progress import ProgressHandler, ProgressStep
 
 class ExcelToShapefileConverter(QObject):
     progress_signal = pyqtSignal(int, str)
     
     def __init__(self, progress_dialog=None):
         super().__init__()
-        self.progress_dialog = progress_dialog
+        self.file_handler = FileHandler()
+        self.progress_handler = ProgressHandler(progress_dialog)
         self.required_columns = {
             'StartChainage': float,
             'StartingLatitude': float,
@@ -24,27 +27,22 @@ class ExcelToShapefileConverter(QObject):
             'LaneNumber': str
         }
     
-    def update_progress(self, value, message):
-        if self.progress_dialog:
-            self.progress_dialog.set_progress(value, message)
-        self.progress_signal.emit(value, message)
-    
     def validate_excel(self, excel_path):
+        """Validate Excel file contents"""
         try:
-            self.update_progress(15, "Validating Excel file...")
-            
-            if not Path(excel_path).exists():
-                return False, f"Excel file not found: {excel_path}", None
+            # Use FileHandler to validate file
+            valid, msg = self.file_handler.validate_file_exists(excel_path, '.xlsx')
+            if not valid:
+                return False, msg, None
                 
-            self.update_progress(20, "Reading Excel data...")
             df = pd.read_excel(excel_path)
             
-            self.update_progress(25, "Checking columns...")
+            # Check required columns
             missing_cols = [col for col in self.required_columns if col not in df.columns]
             if missing_cols:
                 return False, f"Missing required columns: {', '.join(missing_cols)}", None
                 
-            self.update_progress(30, "Validating data types...")
+            # Validate data types
             type_errors = []
             for col, expected_type in self.required_columns.items():
                 if not pd.api.types.is_numeric_dtype(df[col]) and expected_type == float:
@@ -52,16 +50,24 @@ class ExcelToShapefileConverter(QObject):
             
             if type_errors:
                 return False, f"Data type issues: {', '.join(type_errors)}", None
-                
-            self.update_progress(40, "Excel validation complete")
+            
             return True, "Excel file validated successfully", df
             
         except Exception as e:
             return False, f"Error reading Excel file: {str(e)}", None
     
     def convert_to_shapefile(self, df, output_path):
+        """Convert Excel data to shapefile"""
         try:
-            self.update_progress(45, "Creating geometries...")
+            # Define workflow steps
+            steps = [
+                ProgressStep(45, "Creating geometries..."),
+                ProgressStep(70, "Creating GeoDataFrame..."),
+                ProgressStep(80, "Saving shapefile..."),
+                ProgressStep(90, "Shapefile created successfully")
+            ]
+
+            # Create geometries
             geometries = []
             total_rows = len(df)
             
@@ -72,33 +78,84 @@ class ExcelToShapefileConverter(QObject):
                 
                 # Update progress every 10 rows
                 if i % 10 == 0:
-                    progress = 45 + int((i / total_rows) * 45)
-                    self.update_progress(progress, f"Processing row {i+1} of {total_rows}...")
+                    progress = 45 + int((i / total_rows) * 25)
+                    self.progress_handler.update(progress, f"Processing row {i+1} of {total_rows}...")
             
-            self.update_progress(70, "Creating GeoDataFrame...")
-            gdf = gpd.GeoDataFrame(
-                df,
-                geometry=geometries,
-                crs='EPSG:4326'
-            )
+            # Create GeoDataFrame
+            gdf = gpd.GeoDataFrame(df, geometry=geometries, crs='EPSG:4326')
             
-            self.update_progress(80, "Saving shapefile...")
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Ensure output directory exists
+            self.file_handler.create_directory(Path(output_path).parent)
             
+            # Convert output path
+            output_path = self.file_handler.get_output_shapefile_path(output_path)
+            
+            # Save the file
             gdf.to_file(output_path)
             
-            self.update_progress(90, "Shapefile created successfully")
             return True, f"Shapefile created: {output_path}"
             
         except Exception as e:
             error_msg = f"Error creating shapefile: {str(e)}"
-            self.update_progress(0, error_msg)
+            self.progress_handler.update(0, error_msg)
             return False, error_msg
 
     def process_excel(self, excel_path, output_shapefile):
-        valid, msg, df = self.validate_excel(excel_path)
-        if not valid:
-            return False, msg
+        """Process Excel file and convert to shapefile"""
+        workflow_steps = [
+            ProgressStep(0, "Starting Excel conversion..."),
+            ProgressStep(15, "Validating Excel file..."),
+            ProgressStep(30, "Reading Excel data..."),
+            ProgressStep(45, "Creating geometries..."),
+            ProgressStep(70, "Building shapefile..."),
+            ProgressStep(90, "Saving shapefile..."),
+            ProgressStep(100, "Conversion complete!")
+        ]
+        
+        try:
+            self.progress_handler.update(workflow_steps[0].value, workflow_steps[0].message)
             
-        return self.convert_to_shapefile(df, output_shapefile)
+            # Validate Excel file
+            self.progress_handler.update(workflow_steps[1].value, workflow_steps[1].message)
+            valid, msg, df = self.validate_excel(excel_path)
+            if not valid:
+                return False, msg
+            
+            # Read Excel data
+            self.progress_handler.update(workflow_steps[2].value, workflow_steps[2].message)
+            
+            # Create geometries
+            self.progress_handler.update(workflow_steps[3].value, workflow_steps[3].message)
+            geometries = []
+            total_rows = len(df)
+            
+            for i, (_, row) in enumerate(df.iterrows()):
+                start_point = (row['StartingLongitude'], row['StartingLatitude'])
+                end_point = (row['EndingLongitude'], row['EndingLatitude'])
+                geometries.append(LineString([start_point, end_point]))
+                
+                # Update progress every 10 rows
+                if i % 10 == 0:
+                    progress = workflow_steps[3].value + int((i / total_rows) * 25)
+                    self.progress_handler.update(progress, f"Processing row {i+1} of {total_rows}...")
+            
+            # Create GeoDataFrame
+            self.progress_handler.update(workflow_steps[4].value, workflow_steps[4].message)
+            gdf = gpd.GeoDataFrame(df, geometry=geometries, crs='EPSG:4326')
+            
+            # Ensure output directory exists
+            output_path = self.file_handler.get_output_shapefile_path(output_shapefile)
+            self.file_handler.create_directory(Path(output_path).parent)
+            
+            # Save the file
+            self.progress_handler.update(workflow_steps[5].value, workflow_steps[5].message)
+            gdf.to_file(output_path)
+            
+            # Complete
+            self.progress_handler.update(workflow_steps[6].value, workflow_steps[6].message)
+            return True, f"Shapefile created successfully: {output_path}"
+            
+        except Exception as e:
+            error_msg = f"Error processing Excel file: {str(e)}"
+            self.progress_handler.update(0, error_msg)
+            return False, error_msg
